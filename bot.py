@@ -240,7 +240,7 @@ def main():
             tweet_text += f"   - 75%CI：{format_score_jp(ci_75[0])}-{format_score_jp(ci_75[1])}\n\n"
     
     # Add footnote
-    tweet_text += "CI=信頼区間"
+    tweet_text += "※CI: 信頼区間"
     
     # 4. Post tweet with all images
     image_paths = []
