@@ -12,8 +12,15 @@ BORDER_FILES = {
 }
 
 def format_score_jp(score):
-    """Format score in Japanese-friendly format with commas"""
-    return f"{score:,}"
+    """Format score in Japanese units (万 only for 10000+)"""
+    if score >= 10000:  # 万 (ten thousand)
+        man_value = score / 10000
+        if man_value == int(man_value):
+            return f"{int(man_value)}万"
+        else:
+            return f"{man_value:.1f}万"
+    else:
+        return f"{score:,}"
 
 def setup_twitter_api():
     """Setup Twitter API client using environment variables"""
