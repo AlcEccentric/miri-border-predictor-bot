@@ -1,7 +1,7 @@
 import sys
 import os
 import tweepy
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from dotenv import load_dotenv
 from utils import r2, time_utils, image_generator
@@ -10,6 +10,10 @@ BORDER_FILES = {
     100: "prediction/0/100.0/predictions.json",
     2500: "prediction/0/2500.0/predictions.json"
 }
+
+def format_score_jp(score):
+    """Format score in Japanese-friendly format with commas"""
+    return f"{score:,}"
 
 def setup_twitter_api():
     """Setup Twitter API client using environment variables"""
@@ -113,6 +117,14 @@ def main():
     if not (start_at <= now <= end_at):
         print("Current time is outside event period. Exiting.")
         return
+    
+    # Check if current time is within the posting window [start_at + 36.5hr, end_at - 2.5hr]
+    posting_start = start_at + timedelta(hours=36.5)
+    posting_end = end_at - timedelta(hours=2.5)
+    
+    if not (posting_start <= now <= posting_end):
+        print(f"Current time {now} is outside posting window [{posting_start} - {posting_end}]. Exiting.")
+        return
 
     # 2. Collect prediction data for all borders
     border_predictions = {}
@@ -140,6 +152,20 @@ def main():
             prediction_timestamp = r2.get_file_timestamp(path)
             print(f"DEBUG: Raw prediction timestamp for border {border}: {prediction_timestamp}")
             print(f"DEBUG: Timestamp type: {type(prediction_timestamp)}")
+            
+            # Check if prediction data is stale (more than 2 hours old)
+            if isinstance(prediction_timestamp, datetime):
+                if prediction_timestamp.tzinfo is None:
+                    pred_utc = pytz.utc.localize(prediction_timestamp)
+                else:
+                    pred_utc = prediction_timestamp.astimezone(pytz.utc)
+                
+                now_utc = now.astimezone(pytz.utc)
+                time_diff = now_utc - pred_utc
+                
+                if time_diff > timedelta(hours=2):
+                    print(f"Prediction data is stale. Generated {time_diff} ago (more than 2 hours). Exiting.")
+                    return
 
         final_score = pred["data"]["raw"]["target"][-1]
         ci_90 = (pred["data"]["raw"]["bounds"]["90"]["lower"][-1],
@@ -192,14 +218,22 @@ def main():
     else:
         pred_time_str = str(prediction_timestamp)
     
-    tweet_text = f"{event_name}\n"
-    tweet_text += f"予測生成日時：{pred_time_str}\n"
+    tweet_text = f"{event_name}\n\n"
+    tweet_text += f"予測生成日時：{pred_time_str}\n\n"
     
-    # Add predictions for each border
+    # Add predictions for each border with confidence intervals (indented format)
     for border in sorted(BORDER_FILES.keys()):
         if border in border_predictions:
             final_score = border_predictions[border]['final_score']
-            tweet_text += f"{border}位予測値：{final_score:,}\n"
+            ci_90 = border_predictions[border]['ci_90']
+            ci_75 = border_predictions[border]['ci_75']
+            
+            tweet_text += f"- {border}位予測値：{format_score_jp(final_score)}\n"
+            tweet_text += f"   - 90%CI：{format_score_jp(ci_90[0])}-{format_score_jp(ci_90[1])}\n"
+            tweet_text += f"   - 75%CI：{format_score_jp(ci_75[0])}-{format_score_jp(ci_75[1])}\n\n"
+    
+    # Add footnote
+    tweet_text += "CI=信頼区間"
     
     # 4. Post tweet with all images
     image_paths = []
