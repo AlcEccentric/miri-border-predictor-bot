@@ -94,7 +94,7 @@ def main():
     debug_mode = '--debug' in sys.argv or os.getenv('DEBUG_MODE', '').lower() == 'true'
     
     if debug_mode:
-        print("Running in DEBUG MODE")
+        print("Running in DEBUG MODE, meaning no tweets will be posted. \n Image & text will be saved to debug directory.")
         # Create debug directory if it doesn't exist
         os.makedirs('debug', exist_ok=True)
     else:
@@ -113,7 +113,7 @@ def main():
     # 1. Load latest event info
     latest_event = r2.read_json_file("metadata/latest_event_border_info.json")
 
-    if latest_event["EventType"] not in [3, 4]:
+    if latest_event["EventType"] not in [3, 4, 11, 13]:
         print("EventType not eligible. Exiting.")
         return
 
