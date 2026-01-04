@@ -31,10 +31,12 @@ FONT_PATH = get_bundled_font()
 def generate_summary_image(event_name: str, border: int, event_length_days: float,
                            final_score: int, ci_90: tuple, ci_75: tuple,
                            neighbors: list, event_end_time: str, progress_percentage: float, 
-                           prediction_timestamp, output_path="summary.png"):
+                           prediction_timestamp, output_path="summary.png", outlier_direction=None):
 
-    # Calculate height based on content (2-row design for each neighbor)
-    neighbors_table_height = 140 + len(neighbors) * 73 + 50  # Table header + 2-row entries + footnote space
+    # Calculate dynamic heights
+    has_warning = outlier_direction in ('high', 'low')
+    # Neighbors section: header + rows + bottom padding for footnote (extra margin)
+    neighbors_table_height = 140 + len(neighbors) * 73 + 80
     width, height = 1200, 700 + neighbors_table_height
     img = Image.new("RGB", (width, height), color=(250, 250, 250))  # Light gray background
     draw = ImageDraw.Draw(img)
@@ -108,7 +110,9 @@ def generate_summary_image(event_name: str, border: int, event_length_days: floa
     
     # 2. PREDICTION SECTION (Border, Final Prediction, CIs)
     pred_section_y = 80
-    draw_rounded_rect(20, pred_section_y, width-40, 230, 10, bg_section, border_color)
+    # Keep original height when no warning; add extra bottom padding only when warning exists
+    pred_section_height = 230 + (40 if has_warning else 0)
+    draw_rounded_rect(20, pred_section_y, width-40, pred_section_height, 10, bg_section, border_color)
     
     # Border as prominent subtitle
     draw.text((35, pred_section_y + 25), f"{border}位予測", fill=text_color, font=font_subtitle)
@@ -134,6 +138,29 @@ def generate_summary_image(event_name: str, border: int, event_length_days: floa
     ci75_x = col1_x + draw.textlength("75% 信頼区間: ", font=font_text)
     draw.text((ci75_x, y_offset + 75), f"{ci_75[0]:,} ～ {ci_75[1]:,}", fill=secondary_color, font=font_bold)
     draw.text((col1_x, y_offset + 110), f"予測生成日時: {pred_time_str}", fill=text_color, font=font_text)
+
+    # Outlier warning within the prediction section (under generation time)
+    if has_warning:
+        try:
+            # Anchor near bottom of prediction box with safe margin
+            warn_y = pred_section_y + pred_section_height - 50
+            warn_x = col1_x
+            direction_short = '高め' if outlier_direction == 'high' else '低め'
+            result_trend_text = '下振れ' if outlier_direction == 'high' else '上振れ'
+            warn_text = f"※このボーダーは過去同タイプ比で{direction_short}のため、予測は{result_trend_text}しやすいです。"
+            # Draw full text in the same size as other text in the section,
+            # then overlay only result_trend_text in red/bold
+            draw.text((warn_x, warn_y), warn_text, fill=text_color, font=font_text)
+            try:
+                idx = warn_text.find(result_trend_text)
+                if idx != -1:
+                    before = warn_text[:idx]
+                    before_w = draw.textlength(before, font=font_text)
+                    draw.text((warn_x + before_w, warn_y), result_trend_text, fill=accent_color, font=font_bold)
+            except Exception:
+                draw.text((warn_x, warn_y), warn_text, fill=accent_color, font=font_text)
+        except Exception:
+            pass
     
     # 3. METADATA SECTION
     meta_section_y = 330
@@ -154,8 +181,8 @@ def generate_summary_image(event_name: str, border: int, event_length_days: floa
     # Table headers - simplified
     header_y = table_y + 65
     draw.rectangle([35, header_y, width-35, header_y + 35], fill=(240, 240, 240), outline=border_color)
-    draw.text((45, header_y + 10), "順位", fill=secondary_color, font=font_text)
-    draw.text((100, header_y + 10), "イベント名", fill=secondary_color, font=font_text)
+    draw.text((45, header_y + 4), "順位", fill=secondary_color, font=font_text)
+    draw.text((100, header_y + 4), "イベント名", fill=secondary_color, font=font_text)
     
     # Table rows - 2-row design for each neighbor
     row_y = header_y + 40
@@ -194,8 +221,8 @@ def generate_summary_image(event_name: str, border: int, event_length_days: floa
         
         row_y += row_height + 8  # Increased spacing between entries
 
-    # Add footnote within the table section, at the bottom
-    footnote_y = table_y + neighbors_table_height - 35  # Position within section, 35px from bottom
+    # Add footnote within the table section, anchored near the bottom with extra margin
+    footnote_y = table_y + neighbors_table_height - 40  # 45px from bottom
     footnote_text = "*イベント期間が現在のイベントと異なる場合、正規化が適用されます。詳細は yuenimillion.live をご覧ください。"
     draw.text((45, footnote_y), footnote_text, fill=text_color, font=font_small)
 

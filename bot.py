@@ -113,6 +113,9 @@ def main():
     # 1. Load latest event info
     latest_event = r2.read_json_file("metadata/latest_event_border_info.json")
 
+    # Event name used in tweets/images
+    event_name = latest_event.get("EventName", "")
+
     if latest_event["EventType"] not in [3, 4, 11, 13]:
         print("EventType not eligible. Exiting.")
         return
@@ -145,7 +148,6 @@ def main():
             raise Exception(f"Prediction for event {latest_event['EventId']} not available for border {border}")
 
         # Extract info
-        event_name = latest_event["EventName"]
         event_end_time = latest_event["EndAt"]
         event_len_days = (len(pred["data"]["raw"]["target"]) - 1) * 0.5 / 24  # 30min steps
 
@@ -199,15 +201,90 @@ def main():
         # Sort neighbors by rank
         neighbors_info.sort(key=lambda x: x[0])
 
+        # Detect if this border is an outlier compared to historical neighbors
+        # Check a small window ending at normalized last_known_step_index using normalized series
+        outlier_direction = None
+        try:
+            # Use normalized data series for both target and neighbors
+            target = pred["data"]["normalized"].get("target")
+            normalized_neighbors = pred["data"]["normalized"].get("neighbors")
+
+            if not target or len(target) == 0 or not normalized_neighbors:
+                outlier_direction = None
+            else:
+                # Prefer normalized last_known_step_index if available, else fall back to raw
+                last_known_step_norm = pred.get("metadata", {}).get("normalized", {}).get("last_known_step_index", last_known_step)
+                # Window radius of 2: check indices last_known_step_norm-2 .. last_known_step_norm
+                window_radius = 2
+                end_idx = min(last_known_step_norm, len(target) - 1)
+                start_idx = max(0, end_idx - window_radius)
+
+                all_above = True
+                all_below = True
+                checked_count = 0
+
+                for i in range(start_idx, end_idx + 1):
+                    t_val = target[i]
+                    neighbor_vals = []
+
+                    for rank_key, neigh_series in normalized_neighbors.items():
+                        try:
+                            if i < len(neigh_series):
+                                v = neigh_series[i]
+                                if isinstance(v, (int, float)) and not (isinstance(v, float) and v != v):  # not NaN
+                                    neighbor_vals.append(v)
+                        except Exception:
+                            continue
+
+                    # If neighbors don't have data at this index, skip this index
+                    if len(neighbor_vals) == 0:
+                        continue
+
+                    checked_count += 1
+                    max_neighbor = max(neighbor_vals)
+                    min_neighbor = min(neighbor_vals)
+
+                    if not (t_val > max_neighbor):
+                        all_above = False
+                    if not (t_val < min_neighbor):
+                        all_below = False
+
+                    # Early exit if neither condition can hold
+                    if not all_above and not all_below:
+                        break
+
+                # Debug prints to help trace detection issues
+                if debug_mode:
+                    print(f"DEBUG: border={border} last_known_step_index(normalized)={last_known_step_norm} start_idx={start_idx} end_idx={end_idx}")
+                    print(f"DEBUG: checked_count={checked_count} all_above={all_above} all_below={all_below}")
+
+                # Require at least one checked index to avoid false positives
+                if checked_count == 0:
+                    outlier_direction = None
+                elif all_above:
+                    outlier_direction = 'high'
+                elif all_below:
+                    outlier_direction = 'low'
+                else:
+                    outlier_direction = None
+        except Exception as e:
+            if debug_mode:
+                print(f"DEBUG: Exception in outlier detection: {e}")
+            outlier_direction = None
+
+        # Attach outlier info to stored predictions for later text output
+        border_predictions[border]['outlier_direction'] = outlier_direction
+
         # Generate image
         if debug_mode:
             image_path = f"debug/summary_border_{border}.png"
         else:
             image_path = f"output/summary_border_{border}.png"
-            
+
         image_generator.generate_summary_image(
             event_name, border, event_len_days, final_score, ci_90, ci_75, neighbors_info, 
-            event_end_time, progress_percentage, prediction_timestamp, output_path=image_path
+            event_end_time, progress_percentage, prediction_timestamp, output_path=image_path,
+            outlier_direction=outlier_direction
         )
         print(f"Generated image for border {border}: {image_path}")
 
@@ -236,8 +313,17 @@ def main():
             ci_75 = border_predictions[border]['ci_75']
             
             tweet_text += f"- {border}位予測値：{format_score_jp(final_score)}\n"
-            tweet_text += f"   - 90%CI：{format_score_jp(ci_90[0])}-{format_score_jp(ci_90[1])}\n"
-            tweet_text += f"   - 75%CI：{format_score_jp(ci_75[0])}-{format_score_jp(ci_75[1])}\n\n"
+            tweet_text += f"  - 90%CI：{format_score_jp(ci_90[0])}-{format_score_jp(ci_90[1])}\n"
+            tweet_text += f"  - 75%CI：{format_score_jp(ci_75[0])}-{format_score_jp(ci_75[1])}\n"
+            # If outlier detected for this border, add a warning note
+            outlier = border_predictions[border].get('outlier_direction')
+            if outlier in ('high', 'low'):
+                direction_text = '高め' if outlier == 'high' else '低め'
+                result_trend_text = '下振れ' if outlier == 'high' else '上振れ'
+                # Shortened warning to avoid exceeding tweet length
+                tweet_text += f"  ※このボーダーは過去同タイプ比で{direction_text}のため、予測は{result_trend_text}注意。\n\n"
+            else:
+                tweet_text += "\n"
     
     # Add footnote
     tweet_text += "※CI: 信頼区間"
