@@ -202,71 +202,63 @@ def main():
         neighbors_info.sort(key=lambda x: x[0])
 
         # Detect if this border is an outlier compared to historical neighbors
-        # Check a small window ending at normalized last_known_step_index using normalized series
+        # New rule: Only run if target and every neighbor each have > 50 points.
+        # Compare the last 50 points index-by-index with strict inequalities.
         outlier_direction = None
         try:
-            # Use normalized data series for both target and neighbors
             target = pred["data"]["normalized"].get("target")
             normalized_neighbors = pred["data"]["normalized"].get("neighbors")
 
-            if not target or len(target) == 0 or not normalized_neighbors:
+            # Basic presence checks
+            if not isinstance(target, list) or not normalized_neighbors or not isinstance(normalized_neighbors, dict):
                 outlier_direction = None
             else:
-                # Prefer normalized last_known_step_index if available, else fall back to raw
-                last_known_step_norm = pred.get("metadata", {}).get("normalized", {}).get("last_known_step_index", last_known_step)
-                # Window radius of 2: check indices last_known_step_norm-2 .. last_known_step_norm
-                window_radius = 2
-                end_idx = min(last_known_step_norm, len(target) - 1)
-                start_idx = max(0, end_idx - window_radius)
+                target_len = len(target)
+                neighbor_items = list(normalized_neighbors.items())
 
-                all_above = True
-                all_below = True
-                checked_count = 0
-
-                for i in range(start_idx, end_idx + 1):
-                    t_val = target[i]
-                    neighbor_vals = []
-
-                    for rank_key, neigh_series in normalized_neighbors.items():
-                        try:
-                            if i < len(neigh_series):
-                                v = neigh_series[i]
-                                if isinstance(v, (int, float)) and not (isinstance(v, float) and v != v):  # not NaN
-                                    neighbor_vals.append(v)
-                        except Exception:
-                            continue
-
-                    # If neighbors don't have data at this index, skip this index
-                    if len(neighbor_vals) == 0:
-                        continue
-
-                    checked_count += 1
-                    max_neighbor = max(neighbor_vals)
-                    min_neighbor = min(neighbor_vals)
-
-                    if not (t_val > max_neighbor):
-                        all_above = False
-                    if not (t_val < min_neighbor):
-                        all_below = False
-
-                    # Early exit if neither condition can hold
-                    if not all_above and not all_below:
-                        break
-
-                # Debug prints to help trace detection issues
-                if debug_mode:
-                    print(f"DEBUG: border={border} last_known_step_index(normalized)={last_known_step_norm} start_idx={start_idx} end_idx={end_idx}")
-                    print(f"DEBUG: checked_count={checked_count} all_above={all_above} all_below={all_below}")
-
-                # Require at least one checked index to avoid false positives
-                if checked_count == 0:
+                # Scope condition: current event and EVERY neighbor each have more than 50 points
+                if target_len <= 50 or any(len(series) <= 50 for _, series in neighbor_items):
+                    # Skip check entirely
                     outlier_direction = None
-                elif all_above:
-                    outlier_direction = 'high'
-                elif all_below:
-                    outlier_direction = 'low'
                 else:
-                    outlier_direction = None
+                    # Take the last 50 points for target and each neighbor
+                    t_last = target[-50:]
+
+                    all_above = True
+                    all_below = True
+
+                    # Index-by-index strict comparison across all neighbors
+                    for i in range(50):
+                        t_val = t_last[i]
+
+                        # Validate numeric
+                        if not isinstance(t_val, (int, float)) or (isinstance(t_val, float) and t_val != t_val):
+                            all_above = False
+                            all_below = False
+                            break
+
+                        # Retrieve neighbor values at aligned last-50 index
+                        for _, series in neighbor_items:
+                            n_val = series[-50 + i]
+                            # Validate numeric and apply strict comparisons (no ties)
+                            if not isinstance(n_val, (int, float)) or (isinstance(n_val, float) and n_val != n_val):
+                                all_above = False
+                                all_below = False
+                                break
+                            if not (t_val > n_val):
+                                all_above = False
+                            if not (t_val < n_val):
+                                all_below = False
+                        # Early exit if neither condition can hold
+                        if not all_above and not all_below:
+                            break
+
+                    if all_above:
+                        outlier_direction = 'high'
+                    elif all_below:
+                        outlier_direction = 'low'
+                    else:
+                        outlier_direction = None
         except Exception as e:
             if debug_mode:
                 print(f"DEBUG: Exception in outlier detection: {e}")
