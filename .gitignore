@@ -2,3 +2,6 @@
 debug/
 output/
 __pycache__
+docs
+preview_anniversary.py
+.DS_Store
