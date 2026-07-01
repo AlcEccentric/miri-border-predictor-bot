@@ -20,6 +20,13 @@ ANNIVERSARY_BORDERS = [100, 1000]
 
 WEBSITE_URL = "https://yuenimillion.live"
 
+# How long after the event start before the bot begins posting. Anniversary
+# events warm up more slowly, so they hold off longer.
+NORMAL_POSTING_START_OFFSET = timedelta(hours=36.5)
+ANNIVERSARY_POSTING_START_OFFSET = timedelta(hours=72)
+# Stop posting this long before the event ends.
+POSTING_END_OFFSET = timedelta(hours=2.5)
+
 
 def format_score_jp(score):
     """Format score in Japanese units (万 only for 10000+)"""
@@ -118,8 +125,12 @@ def post_tweet(client, api_v1, tweet_text, image_paths=None, debug_mode=False):
         raise
 
 
-def within_posting_window(latest_event, now):
-    """Validate event period and posting window. Returns True if OK to post."""
+def within_posting_window(latest_event, now, start_offset):
+    """Validate event period and posting window. Returns True if OK to post.
+
+    start_offset is how long after the event start posting may begin (it
+    differs by event type).
+    """
     start_at = time_utils.parse_jst_time(latest_event["StartAt"])
     end_at = time_utils.parse_jst_time(latest_event["EndAt"])
 
@@ -127,8 +138,8 @@ def within_posting_window(latest_event, now):
         print("Current time is outside event period. Exiting.")
         return False
 
-    posting_start = start_at + timedelta(hours=36.5)
-    posting_end = end_at - timedelta(hours=2.5)
+    posting_start = start_at + start_offset
+    posting_end = end_at - POSTING_END_OFFSET
     if not (posting_start <= now <= posting_end):
         print(f"Current time {now} is outside posting window [{posting_start} - {posting_end}]. Exiting.")
         return False
@@ -355,7 +366,11 @@ def main():
         return
 
     now = time_utils.now_jst()
-    if not within_posting_window(latest_event, now):
+    if event_type == ANNIVERSARY_EVENT_TYPE:
+        start_offset = ANNIVERSARY_POSTING_START_OFFSET
+    else:
+        start_offset = NORMAL_POSTING_START_OFFSET
+    if not within_posting_window(latest_event, now, start_offset):
         return
 
     if event_type == ANNIVERSARY_EVENT_TYPE:

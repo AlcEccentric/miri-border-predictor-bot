@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+.env.*
+__pycache__
+**/__pycache__
+*.pyc
+.venv
+debug/
+output/
+.DS_Store
+preview_anniversary.py
+docs/
