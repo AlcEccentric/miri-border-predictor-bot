@@ -102,13 +102,71 @@ IDOL_GROUPS = [
     },
 ]
 
-# Accent color per group (used for the image header).
-GROUP_COLORS = {
+# --- Category background palette -----------------------------------------
+# These 5 tones are the shared palette for the image backgrounds (NOT the
+# per-idol accent, which stays each idol's own color). All 4 groups share
+# the same background (AllStars tone); the darkest (INK) is the shared
+# text ink, so background/text/image read from one consistent palette.
+INK_COLOR = "#383B64"
+
+GROUP_BASE_COLOR = {
+    "allstars": "#D4DCF2",
+    "princess": "#99BED8",
+    "fairy": "#749CB7",
+    "angel": "#E4EBCB",
+}
+
+# The one distinguishing color per group: a small tab/chip next to the
+# title. Kept separate from the background palette above (which is now
+# shared/neutral) and set back to the original, more saturated brand
+# colors so each category is easy to tell apart at a glance.
+GROUP_TAB_COLOR = {
     "allstars": "#e22b30",
     "princess": "#f74b9a",
     "fairy": "#19a2f0",
     "angel": "#f3c84b",
 }
+
+
+def _hex_to_rgb(hex_color):
+    h = hex_color.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _rgb_to_hex(rgb):
+    return "#{:02x}{:02x}{:02x}".format(*(max(0, min(255, round(c))) for c in rgb))
+
+
+def _mix(hex_a, hex_b, t):
+    """Mix hex_a and hex_b; t=0 -> hex_a, t=1 -> hex_b."""
+    a = _hex_to_rgb(hex_a)
+    b = _hex_to_rgb(hex_b)
+    return _rgb_to_hex(tuple(a[i] + (b[i] - a[i]) * t for i in range(3)))
+
+
+def group_theme(key):
+    """Build the background/text theme for one idol group.
+
+    The background (page/cell/portrait tint) is shared across all 4 groups
+    and always uses the AllStars tone, so every image has the same base
+    look. Each group keeps its own identity via the accent color (used for
+    the group-name title and the header underline beneath it), derived
+    from that group's own palette tone so "Princess"/"AllStars"/etc. read
+    as visually distinct even on the shared background.
+    """
+    shared_base = GROUP_BASE_COLOR["allstars"]
+    tab_color = GROUP_TAB_COLOR.get(key, shared_base)
+    return {
+        "base": shared_base,
+        "page_bg": _mix(shared_base, "#ffffff", 0.18),  # mostly base, lightly softened
+        "cell_bg": _mix(shared_base, "#ffffff", 0.72),  # near-white, subtly tinted
+        # Category identity lives entirely in this one tab/chip color next
+        # to the title. Everything else (title text, underline, subtitle)
+        # stays neutral ink so it never looks like a text-color mistake.
+        "tab_color": tab_color,
+        "ink": INK_COLOR,
+        "muted": _mix(INK_COLOR, "#ffffff", 0.35),      # neutral secondary text (e.g. timestamp)
+    }
 
 
 def idol_name(idol_id: int) -> str:

@@ -55,8 +55,8 @@ _TEMPLATE = Template(r"""
 
   body {
     font-family: 'MOBO', sans-serif;
-    background: #fafafa;
-    color: #2c3e50;
+    background: {{ theme.page_bg }};
+    color: {{ theme.ink }};
     width: 1500px;
   }
 
@@ -66,14 +66,18 @@ _TEMPLATE = Template(r"""
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    border-bottom: 4px solid {{ accent }};
+    border-bottom: 4px solid {{ theme.tab_color }};
     padding-bottom: 14px;
     margin-bottom: 24px;
   }
-  .header .title { font-size: 44px; font-weight: 700; }
-  .header .group-name { color: {{ accent }}; }
-  .header .event { font-size: 24px; color: #5b6b7b; }
-  .header .meta { font-size: 20px; color: #7a8a99; text-align: right; }
+  .header .title { display: flex; align-items: center; gap: 14px; }
+  .header .group-tab {
+    width: 14px; height: 40px; border-radius: 4px;
+    background: {{ theme.tab_color }};
+  }
+  .header .group-name { font-size: 40px; font-weight: 700; color: {{ theme.ink }}; }
+  .header .event { font-size: 24px; font-weight: 700; color: {{ theme.ink }}; }
+  .header .meta { font-size: 20px; color: {{ theme.muted }}; text-align: right; }
 
   .grid {
     display: grid;
@@ -84,8 +88,8 @@ _TEMPLATE = Template(r"""
 
   .cell {
     display: flex;
-    background: #ffffff;
-    border: 1px solid #dfe4e8;
+    background: {{ theme.cell_bg }};
+    border: 1px solid {{ theme.base }};
     border-left-width: 8px;
     border-radius: 12px;
     overflow: hidden;
@@ -94,12 +98,12 @@ _TEMPLATE = Template(r"""
   .cell.empty { background: transparent; border: none; }
 
   .portrait {
-    flex: 0 0 110px;
-    width: 110px;
+    flex: 0 0 140px;
+    width: 140px;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #f0f3f5;
+    background: {{ theme.base }};
   }
   .portrait img { width: 100%; height: 100%; object-fit: cover; }
   .portrait .placeholder {
@@ -111,6 +115,7 @@ _TEMPLATE = Template(r"""
   .data { flex: 1 1 auto; padding: 12px 14px; min-width: 0; }
   .data .name {
     font-size: 24px; font-weight: 700; margin-bottom: 8px;
+    color: {{ theme.ink }};
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
 
@@ -120,22 +125,25 @@ _TEMPLATE = Template(r"""
   .border-row .blabel {
     font-size: 16px; border-radius: 4px; padding: 1px 7px; font-weight: 700;
   }
-  .border-row .final { font-size: 23px; font-weight: 700; color: #2980b9; }
-  .border-row .nodata { font-size: 18px; font-weight: 700; color: #95a5a6; }
+  .border-row .final { font-size: 23px; font-weight: 700; color: {{ theme.accent }}; }
+  .border-row .nodata { font-size: 18px; font-weight: 700; color: {{ theme.muted }}; }
   .border-row .ci {
-    font-size: 14px; color: #3d4d5c; margin-top: 2px; line-height: 1.35;
+    font-size: 14px; color: {{ theme.ink }}; margin-top: 2px; line-height: 1.35;
   }
-  .border-row .ci .citag { color: #6b7b8b; }
+  .border-row .ci .citag { color: {{ theme.muted }}; }
 
   .footer {
-    margin-top: 22px; font-size: 18px; color: #8a9aa9; text-align: right;
+    margin-top: 22px; font-size: 18px; color: {{ theme.muted }}; text-align: right;
   }
 </style>
 </head>
 <body>
   <div class="page">
     <div class="header">
-      <div class="title"><span class="group-name">{{ group_name }}</span></div>
+      <div class="title">
+        <span class="group-tab"></span>
+        <span class="group-name">{{ group_name }}</span>
+      </div>
       <div>
         <div class="event">{{ event_name }}</div>
         <div class="meta">予測生成日時：{{ pred_time }}</div>
@@ -187,19 +195,21 @@ _TEMPLATE = Template(r"""
 """)
 
 
-def build_group_html(group_name, accent, event_name, pred_time, idols):
+def build_group_html(group_name, theme, event_name, pred_time, idols):
     """Render the HTML string for one idol group.
 
+    theme: dict from idol_config.group_theme(), with keys
+      base, page_bg, cell_bg, accent, ink, muted.
     idols: list of dicts, each with keys:
-      name (str), initial (str), image_uri (str|None),
-      rows: list of {border_label, final, ci90, ci75}
+      name (str), short (str), color (str), text_color (str),
+      image_uri (str|None), rows: list of {border_label, final, ci90, ci75}
     """
     empty_cells = max(0, 15 - len(idols))
     return _TEMPLATE.render(
         regular_font=_font_data_uri(_REGULAR_FONT),
         bold_font=_font_data_uri(_BOLD_FONT),
         group_name=group_name,
-        accent=accent,
+        theme=theme,
         event_name=event_name,
         pred_time=pred_time,
         idols=idols,
@@ -207,11 +217,11 @@ def build_group_html(group_name, accent, event_name, pred_time, idols):
     )
 
 
-def render_group_image(group_name, accent, event_name, pred_time, idols, output_path):
+def render_group_image(group_name, theme, event_name, pred_time, idols, output_path):
     """Render one group's HTML to a PNG file. Returns output_path."""
     from playwright.sync_api import sync_playwright
 
-    html = build_group_html(group_name, accent, event_name, pred_time, idols)
+    html = build_group_html(group_name, theme, event_name, pred_time, idols)
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
