@@ -27,6 +27,17 @@ ANNIVERSARY_POSTING_START_OFFSET = timedelta(hours=72)
 # Stop posting this long before the event ends.
 POSTING_END_OFFSET = timedelta(hours=2.5)
 
+# A prediction file that belongs to the current event but hasn't been
+# refreshed within this window is "stale": still rendered, but flagged.
+# 3h is chosen because data refreshes ~hourly and CDN/caching can add ~1h,
+# so ~2h-old data is normal; 3h avoids false positives.
+STALE_AFTER = timedelta(hours=3)
+
+# Per-border freshness classification outcomes.
+STATE_FRESH = "fresh"
+STATE_STALE = "stale"
+STATE_INSUFFICIENT = "insufficient"
+
 
 def format_score_jp(score):
     """Format score in Japanese units (万 only for 10000+)"""
@@ -192,60 +203,103 @@ def _to_utc(dt):
     return dt.astimezone(pytz.utc)
 
 
-def _build_idol_rows(idol_id, expected_event_id, event_start_utc, now_utc,
-                     stale_after=timedelta(hours=2)):
-    """Read all borders for one idol and return (rows, latest_ok_timestamp).
+def _classify_timestamp(last_modified, event_start_utc, now_utc):
+    """Classify a prediction file's freshness from its Last-Modified time.
 
-    For each border the prediction file is classified:
-      - missing, OR last-modified before the event start  -> insufficient
-        data (the predictor couldn't produce a forecast yet); rendered as
-        "データ不足".
-      - last-modified after start but older than stale_after -> raises (the
-        predictor should have refreshed; we want to be notified). Pass
-        stale_after=None to disable this check (e.g. for offline previews).
-      - fresh                                               -> used.
+    event_start_utc == None disables the check (demo/test mode) -> FRESH.
+    Returns one of STATE_FRESH / STATE_STALE / STATE_INSUFFICIENT.
+    (404 / retrieval errors are handled by the caller, not here.)
+    """
+    if event_start_utc is None:
+        return STATE_FRESH
+
+    lm_utc = _to_utc(last_modified)
+    if lm_utc < event_start_utc:
+        # Leftover file from a previous event: no forecast for this event yet.
+        return STATE_INSUFFICIENT
+    if lm_utc < now_utc - STALE_AFTER:
+        return STATE_STALE
+    return STATE_FRESH
+
+
+def _build_idol_rows(idol_id, expected_event_id, event_start_utc, now_utc):
+    """Read all borders for one idol.
+
+    Returns (rows, latest_shown_ts):
+      - rows: one display dict per border. Fresh borders show the numbers;
+        insufficient borders are marked "データ不足".
+      - latest_shown_ts: newest Last-Modified among fresh borders, or None.
+
+    Per-border classification (order matters):
+      1. Retrieval error (network / non-404 HTTP / 200 without a usable
+         Last-Modified) -> raises (fail-closed: never show unverifiable data).
+      2. Missing (404), OR Last-Modified before event start -> insufficient
+         (leftover file from a previous event) -> "データ不足".
+      3. eventStart <= Last-Modified < now - 3h -> STALE -> raises, aborting
+         the whole post (the predictor should have refreshed by now).
+      4. Fresh -> shown. A fresh file that still lacks bounds means the
+         predictor couldn't produce a full forecast -> treated as
+         insufficient ("データ不足"). Malformed bounds -> raises.
 
     expected_event_id may be None to skip the event-id match check.
-
-    Every border always yields a row so the grid stays complete.
-    latest_ok_timestamp is the newest Last-Modified among fresh files, or
-    None if the idol has no fresh prediction.
     """
     rows = []
-    latest_ok = None
+    latest_shown = None
 
     for border in ANNIVERSARY_BORDERS:
         path = f"prediction/{idol_id}/{float(border)}/predictions.json"
+        # A network error or non-404 HTTP error propagates out of this call.
         pred, last_modified = r2.try_read_json_with_timestamp(path)
 
         if pred is None:
+            # 404: file doesn't exist -> insufficient data for this border.
             rows.append({"border_label": f"{border}位", "insufficient": True})
             continue
 
-        lm_utc = _to_utc(last_modified)
-        if lm_utc < event_start_utc:
-            # Data predates the event: predictor hasn't generated a forecast
-            # for this idol/border yet (insufficient data).
+        # Integrity: we got data but can't verify its age -> fail-closed.
+        if event_start_utc is not None and not isinstance(last_modified, datetime):
+            raise RuntimeError(
+                f"Prediction for idol {idol_id} border {border} has no usable "
+                f"Last-Modified; cannot verify freshness. Path: {path}")
+
+        state = _classify_timestamp(last_modified, event_start_utc, now_utc)
+
+        if state == STATE_INSUFFICIENT:
             rows.append({"border_label": f"{border}位", "insufficient": True})
             continue
 
-        if stale_after is not None and (now_utc - lm_utc) > stale_after:
+        if state == STATE_STALE:
+            # Belongs to this event but not refreshed within STALE_AFTER.
+            # Abort the entire post so we get notified rather than tweeting
+            # partially outdated numbers.
             raise RuntimeError(
                 f"Prediction for idol {idol_id} border {border} is stale: "
-                f"last modified {last_modified} (after event start, older than {stale_after}). Path: {path}")
+                f"last modified {last_modified} (older than {STALE_AFTER} before now). "
+                f"Aborting post. Path: {path}")
 
+        # Fresh: this file should belong to the current event.
         event_id = pred["metadata"]["raw"]["id"]
         if expected_event_id is not None and event_id != expected_event_id:
             raise RuntimeError(
                 f"Prediction for idol {idol_id} border {border} is for event {event_id}, "
                 f"expected {expected_event_id}. Path: {path}")
 
-        final_score = pred["data"]["raw"]["target"][-1]
-        b75 = pred["data"]["raw"]["bounds"]["75"]
-        b90 = pred["data"]["raw"]["bounds"]["90"]
-        ci75 = (b75["lower_final"], b75["upper_final"])
-        ci90 = (b90["lower_final"], b90["upper_final"])
+        # Bounds may be absent: the predictor couldn't produce a full forecast
+        # (insufficient data) even though a point value exists -> データ不足.
+        # Present-but-malformed bounds is an integrity error -> raise.
+        bounds = pred["data"]["raw"].get("bounds")
+        if not bounds:
+            rows.append({"border_label": f"{border}位", "insufficient": True})
+            continue
+        try:
+            ci75 = (bounds["75"]["lower_final"], bounds["75"]["upper_final"])
+            ci90 = (bounds["90"]["lower_final"], bounds["90"]["upper_final"])
+        except (KeyError, TypeError) as e:
+            raise RuntimeError(
+                f"Prediction for idol {idol_id} border {border} has malformed bounds "
+                f"({e}). Path: {path}")
 
+        final_score = pred["data"]["raw"]["target"][-1]
         rows.append({
             "border_label": f"{border}位",
             "insufficient": False,
@@ -254,26 +308,27 @@ def _build_idol_rows(idol_id, expected_event_id, event_start_utc, now_utc,
             "ci75": f"{format_score_jp(ci75[0])}〜{format_score_jp(ci75[1])}",
         })
 
-        if latest_ok is None or lm_utc > latest_ok:
-            latest_ok = lm_utc
+        lm_utc = _to_utc(last_modified)
+        if latest_shown is None or lm_utc > latest_shown:
+            latest_shown = lm_utc
 
-    return rows, latest_ok
+    return rows, latest_shown
 
 
-def gather_anniversary_rows(expected_event_id, event_start_utc, now_utc,
-                            stale_after=timedelta(hours=2)):
-    """Gather display rows for all 52 idols. Returns (idol_rows, latest_ts).
+def gather_anniversary_rows(expected_event_id, event_start_utc, now_utc):
+    """Gather display data for all 52 idols.
 
-    Raises if no idol has any fresh prediction.
+    Returns (idol_rows, latest_ts). Raises on any stale border, or if no
+    idol has any fresh border at all.
     """
     idol_rows = {}
     latest_ts = None
     for idol_id in range(1, 53):
-        rows, latest_ok = _build_idol_rows(
-            idol_id, expected_event_id, event_start_utc, now_utc, stale_after)
+        rows, latest_shown = _build_idol_rows(
+            idol_id, expected_event_id, event_start_utc, now_utc)
         idol_rows[idol_id] = rows
-        if latest_ok and (latest_ts is None or latest_ok > latest_ts):
-            latest_ts = latest_ok
+        if latest_shown and (latest_ts is None or latest_shown > latest_ts):
+            latest_ts = latest_shown
 
     if latest_ts is None:
         raise RuntimeError("No fresh predictions found for any idol/border in this event.")
@@ -288,14 +343,14 @@ def render_anniversary_images(event_name, pred_time_str, idol_rows, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     image_paths = []
     for group in idol_config.IDOL_GROUPS:
-        accent = idol_config.GROUP_COLORS.get(group["key"], "#2980b9")
+        theme = idol_config.group_theme(group["key"])
         idols = [idol_config.build_idol_render(idol_id, idol_rows[idol_id])
                  for idol_id in group["members"]]
 
         image_path = os.path.join(out_dir, f"summary_{group['key']}.png")
         html_renderer.render_group_image(
             group_name=group["name"],
-            accent=accent,
+            theme=theme,
             event_name=event_name,
             pred_time=pred_time_str,
             idols=idols,
@@ -327,10 +382,12 @@ def run_anniversary_event(latest_event, now, client, api_v1, debug_mode):
 
     out_dir = "debug" if debug_mode else "output"
 
-    idol_rows, latest_ts = gather_anniversary_rows(expected_event_id, event_start_utc, now_utc)
+    idol_rows, latest_ts = gather_anniversary_rows(
+        expected_event_id, event_start_utc, now_utc)
     pred_time_str = format_pred_time(latest_ts)
 
-    image_paths = render_anniversary_images(event_name, pred_time_str, idol_rows, out_dir)
+    image_paths = render_anniversary_images(
+        event_name, pred_time_str, idol_rows, out_dir)
 
     tweet_text = build_anniversary_tweet_text(event_name, pred_time_str)
 
