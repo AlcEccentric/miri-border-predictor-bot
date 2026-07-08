@@ -368,7 +368,6 @@ def build_anniversary_tweet_text(event_name, pred_time_str):
         f"{event_name}\n\n"
         f"各アイドルの{border_text}ボーダー予測（最終スコア・90%/75%CI）です。\n"
         f"予測更新日時：{pred_time_str}\n\n"
-        f"サイトはこちら：{WEBSITE_URL}\n\n"
         "※CI: 信頼区間"
     )
 
