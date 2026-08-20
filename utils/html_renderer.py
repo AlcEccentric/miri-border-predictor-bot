@@ -217,6 +217,166 @@ def build_group_html(group_name, theme, event_name, pred_time, idols):
     )
 
 
+_NORMAL_TEMPLATE = Template(r"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  {% if regular_font %}
+  @font-face {
+    font-family: 'MOBO';
+    font-weight: 400;
+    src: url('{{ regular_font }}') format('opentype');
+  }
+  {% endif %}
+  {% if bold_font %}
+  @font-face {
+    font-family: 'MOBO';
+    font-weight: 700;
+    src: url('{{ bold_font }}') format('opentype');
+  }
+  {% endif %}
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'MOBO', sans-serif;
+    background: {{ theme.page_bg }};
+    color: {{ theme.ink }};
+    width: 900px;
+  }
+
+  .page { padding: 32px 36px 40px; }
+
+  .header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    border-bottom: 4px solid {{ theme.tab_color }};
+    padding-bottom: 14px;
+    margin-bottom: 24px;
+  }
+  .header .event { font-size: 28px; font-weight: 700; color: {{ theme.ink }}; line-height: 1.3; }
+  .header .meta { font-size: 16px; color: {{ theme.muted }}; text-align: right; white-space: nowrap; padding-top: 6px; }
+
+  .cards { display: flex; flex-direction: column; gap: 20px; }
+
+  .card {
+    background: {{ theme.cell_bg }};
+    border: 1px solid {{ theme.base }};
+    border-radius: 14px;
+    padding: 20px 24px;
+  }
+  .card .border-label { font-size: 20px; font-weight: 700; color: {{ theme.ink }}; margin-bottom: 4px; }
+  .card .final { font-size: 34px; font-weight: 700; color: {{ theme.ink }}; margin-bottom: 14px; }
+  .card .final .unit { font-size: 20px; font-weight: 700; margin-right: 8px; }
+  .card .nodata { font-size: 24px; font-weight: 700; color: {{ theme.muted }}; }
+
+  .pills { display: flex; gap: 12px; flex-wrap: wrap; }
+  .pill {
+    flex: 1 1 0;
+    min-width: 140px;
+    border-radius: 10px;
+    padding: 10px 14px;
+    color: #ffffff;
+  }
+  .pill .plabel { font-size: 15px; font-weight: 700; opacity: 0.92; }
+  .pill .pvalue { font-size: 22px; font-weight: 700; margin-top: 2px; }
+
+  .footer {
+    margin-top: 22px; font-size: 16px; color: {{ theme.muted }};
+  }
+  .disclaimer {
+    margin-top: 6px; font-size: 16px; color: {{ theme.muted }};
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <div class="header">
+      <div class="event">{{ event_name }}</div>
+      <div class="meta">予測生成日時：{{ pred_time }}</div>
+    </div>
+
+    <div class="cards">
+      {% for border in borders %}
+      <div class="card">
+        <div class="border-label">{{ border.label }}</div>
+        {% if border.insufficient %}
+        <div class="nodata">データ不足</div>
+        {% else %}
+        <div class="final"><span class="unit">予測値</span> {{ border.final }}</div>
+        <div class="pills">
+          {% for level in border.levels %}
+          <div class="pill" style="background: {{ level.color }};">
+            <div class="plabel">{{ level.pct }}% 安全ライン</div>
+            <div class="pvalue">{{ level.value }}</div>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="footer">※安全ライン：到達すればその確率で安全圏に入る目標ライン</div>
+    <div class="disclaimer">※安全ラインは過去のデータに基づく推定値であり、実際の結果が上回ることもあります。</div>
+  </div>
+</body>
+</html>
+""")
+
+
+def build_normal_event_html(theme, event_name, pred_time, borders):
+    """Render the HTML string for a normal-event summary (2 border cards).
+
+    borders: list of dicts, each with keys:
+      label (str, e.g. "100位"), insufficient (bool),
+      final (str, formatted score) if not insufficient,
+      levels: list of {pct, value, color} if not insufficient.
+    """
+    return _NORMAL_TEMPLATE.render(
+        regular_font=_font_data_uri(_REGULAR_FONT),
+        bold_font=_font_data_uri(_BOLD_FONT),
+        theme=theme,
+        event_name=event_name,
+        pred_time=pred_time,
+        borders=borders,
+    )
+
+
+def render_normal_event_image(theme, event_name, pred_time, borders, output_path):
+    """Render the normal-event summary HTML to a PNG file. Returns output_path.
+
+    The viewport height is fixed at 700px, taller than 2 border cards need,
+    so full_page screenshots capture trailing blank space. Since the body
+    has no explicit height (it sizes to content), we measure the actual
+    rendered height after load and resize the viewport to match before
+    screenshotting, so the PNG is cropped tightly to the content.
+    """
+    from playwright.sync_api import sync_playwright
+
+    html = build_normal_event_html(theme, event_name, pred_time, borders)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page(
+                viewport={"width": 900, "height": 700},
+                device_scale_factor=2,
+            )
+            page.set_content(html, wait_until="networkidle")
+            content_height = page.evaluate("document.body.scrollHeight")
+            page.set_viewport_size({"width": 900, "height": content_height})
+            page.screenshot(path=output_path, full_page=True)
+        finally:
+            browser.close()
+
+    return output_path
+
+
 def render_group_image(group_name, theme, event_name, pred_time, idols, output_path):
     """Render one group's HTML to a PNG file. Returns output_path."""
     from playwright.sync_api import sync_playwright

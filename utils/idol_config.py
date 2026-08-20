@@ -262,3 +262,40 @@ def build_idol_render(idol_id: int, rows):
         "image_uri": idol_image_data_uri(idol_id),
         "rows": rows,
     }
+
+
+# --- Normal-event (type 3/4/11/13) safety-line theme ----------------------
+# Colors match the border-predict-site frontend's safety-line ramp
+# (src/utils/safety.ts), which derives them from the daisyUI "cupcake" theme
+# at runtime via CSS custom properties. There's no CSS engine here, so these
+# are the same theme's resolved hex values (OKLCH -> sRGB), kept in sync by
+# hand. Update both places together if the site's theme or ramp changes.
+SAFETY_LEVEL_COLOR = {
+    70: "#00b5ff",  # info
+    80: "#ffbe00",  # warning
+    90: "#ff5861",  # error
+}
+SAFETY_COLOR_FALLBACK = "#94a3b8"
+
+
+def safety_color(level: int) -> str:
+    return SAFETY_LEVEL_COLOR.get(level, SAFETY_COLOR_FALLBACK)
+
+
+def normal_event_theme():
+    """Theme dict for the normal-event summary image (2 border cards).
+
+    Reuses the same background/ink structure as group_theme() (shared base
+    tone, neutral ink) so the normal-event image has the same visual family
+    as the anniversary ones, but with its own tab color since it isn't tied
+    to any of the 4 idol groups.
+    """
+    shared_base = GROUP_BASE_COLOR["allstars"]
+    return {
+        "base": shared_base,
+        "page_bg": _mix(shared_base, "#ffffff", 0.18),
+        "cell_bg": _mix(shared_base, "#ffffff", 0.72),
+        "tab_color": INK_COLOR,
+        "ink": INK_COLOR,
+        "muted": _mix(INK_COLOR, "#ffffff", 0.35),
+    }

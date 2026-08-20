@@ -159,7 +159,14 @@ def within_posting_window(latest_event, now, start_offset):
 
 
 def run_normal_event(latest_event, now, client, api_v1, debug_mode):
-    """Text-only prediction post for normal events (idol_id 0)."""
+    """Prediction post for normal events (idol_id 0).
+
+    Renders a summary image (2 border cards, safety-line pills colored to
+    match the border-predict-site frontend) when the prediction carries
+    data.raw.safety. Falls back to a text-only tweet with the legacy
+    two-sided 90%/75% CI for older predictions that don't have it yet
+    (graceful degradation, same contract as the predictor and website).
+    """
     event_name = latest_event["EventName"]
     border_predictions = {}
     prediction_timestamp = None
@@ -175,26 +182,90 @@ def run_normal_event(latest_event, now, client, api_v1, debug_mode):
             ensure_not_stale(prediction_timestamp, now)
 
         final_score = pred["data"]["raw"]["target"][-1]
-        ci_90 = (pred["data"]["raw"]["bounds"]["90"]["lower"][-1],
-                 pred["data"]["raw"]["bounds"]["90"]["upper"][-1])
-        ci_75 = (pred["data"]["raw"]["bounds"]["75"]["lower"][-1],
-                 pred["data"]["raw"]["bounds"]["75"]["upper"][-1])
+        safety = pred["data"]["raw"].get("safety")
+        entry = {'final_score': final_score, 'safety': None, 'ci_90': None, 'ci_75': None}
 
-        border_predictions[border] = {'final_score': final_score, 'ci_90': ci_90, 'ci_75': ci_75}
+        if safety and isinstance(safety.get("levels"), list) and safety["levels"]:
+            levels = sorted(int(lvl) for lvl in safety["levels"])
+            entry['safety'] = [
+                (lvl, safety[str(lvl)][-1] if isinstance(safety[str(lvl)], list) else safety[str(lvl)])
+                for lvl in levels
+            ]
+        else:
+            entry['ci_90'] = (pred["data"]["raw"]["bounds"]["90"]["lower"][-1],
+                               pred["data"]["raw"]["bounds"]["90"]["upper"][-1])
+            entry['ci_75'] = (pred["data"]["raw"]["bounds"]["75"]["lower"][-1],
+                               pred["data"]["raw"]["bounds"]["75"]["upper"][-1])
+
+        border_predictions[border] = entry
 
     pred_time_str = format_pred_time(prediction_timestamp)
-    tweet_text = f"{event_name}\n\n予測生成日時：{pred_time_str}\n\n"
+    has_safety = any(bp['safety'] is not None for bp in border_predictions.values())
 
+    if has_safety:
+        image_path = render_normal_event_image(
+            event_name, pred_time_str, border_predictions,
+            out_dir="debug" if debug_mode else "output")
+        tweet_text = f"{event_name}\n\n最新予測はこちら👇\n予測生成日時：{pred_time_str}"
+        try:
+            post_tweet(client, api_v1, tweet_text, image_paths=[image_path], debug_mode=debug_mode)
+        finally:
+            if not debug_mode:
+                try:
+                    os.remove(image_path)
+                except OSError:
+                    pass
+        return
+
+    tweet_text = f"{event_name}\n\n予測生成日時：{pred_time_str}\n\n"
     for border in sorted(NORMAL_BORDER_FILES.keys()):
         if border in border_predictions:
             bp = border_predictions[border]
             tweet_text += f"- {border}位予測値：{format_score_jp(bp['final_score'])}\n"
             tweet_text += f"  - 90%CI：{format_score_jp(bp['ci_90'][0])}-{format_score_jp(bp['ci_90'][1])}\n"
             tweet_text += f"  - 75%CI：{format_score_jp(bp['ci_75'][0])}-{format_score_jp(bp['ci_75'][1])}\n\n"
-
     tweet_text += "※CI: 信頼区間"
 
     post_tweet(client, api_v1, tweet_text, debug_mode=debug_mode)
+
+
+def render_normal_event_image(event_name, pred_time_str, border_predictions, out_dir):
+    """Build the theme/border data and render the normal-event summary PNG."""
+    from utils import html_renderer, idol_config
+
+    os.makedirs(out_dir, exist_ok=True)
+    theme = idol_config.normal_event_theme()
+
+    borders = []
+    for border in sorted(NORMAL_BORDER_FILES.keys()):
+        bp = border_predictions.get(border)
+        if bp is None:
+            continue
+        if bp['safety'] is not None:
+            borders.append({
+                "label": f"{border}位",
+                "insufficient": False,
+                "final": format_score_jp(bp['final_score']),
+                "levels": [
+                    {"pct": lvl, "value": format_score_jp(value), "color": idol_config.safety_color(lvl)}
+                    for lvl, value in bp['safety']
+                ],
+            })
+        else:
+            # Should not normally happen here (has_safety gated the caller
+            # to at least one border), but keep the card graceful if a
+            # single border is still on the legacy CI-only shape.
+            borders.append({"label": f"{border}位", "insufficient": True})
+
+    output_path = os.path.join(out_dir, "normal_event_summary.png")
+    html_renderer.render_normal_event_image(
+        theme=theme,
+        event_name=event_name,
+        pred_time=pred_time_str,
+        borders=borders,
+        output_path=output_path,
+    )
+    return output_path
 
 
 def _to_utc(dt):
