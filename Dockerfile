@@ -6,6 +6,12 @@ FROM mcr.microsoft.com/playwright/python:v1.60.0-noble
 
 WORKDIR /app
 
+# Refresh the system CA store and pip's bundled CA certs.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir --upgrade "pip>=26.2.2"
+
 # Install Python dependencies first for better layer caching.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
